@@ -1,0 +1,30 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.0.161
+  bindPort: 6443
+nodeRegistration:
+  name: k8s-master-1
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: kubeadm-lab
+kubernetesVersion: v1.36.3
+controlPlaneEndpoint: "192.168.0.161:6443"
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+  dnsDomain: cluster.local
+apiServer:
+  certSANs:
+    - k8s-master-1
+    - 192.168.0.161
+  extraArgs:
+    - name: kubelet-certificate-authority
+      value: /etc/kubernetes/pki/ca.crt
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+serverTLSBootstrap: true

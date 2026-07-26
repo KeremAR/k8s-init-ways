@@ -462,6 +462,56 @@ clusterctl describe cluster homelab
 kubectl get machines
 ```
 
+### Temporarily free or retire a Proxmox node used by CAPI
+
+Do not delete CAPI-managed VMs directly in the Proxmox UI. First move their workloads, then change the desired CAPI state so the Kubernetes Node, CAPI Machine, infrastructure Machine, and Proxmox VM are removed together.
+
+For a Proxmox node that hosts only workers:
+
+```bash
+# Workload cluster: identify and drain every Kubernetes node hosted on pve2
+kubectl --kubeconfig=homelab.kubeconfig get nodes -o wide
+
+kubectl --kubeconfig=homelab.kubeconfig drain <PVE2_WORKER_NODE> \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --timeout=10m
+```
+
+Before draining important workloads, check PodDisruptionBudgets and persistent volumes. Repeat the drain command for every worker VM on that Proxmox node.
+
+In `cluster.yaml`, set the node-specific MachineDeployment to zero:
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: homelab-workers-pve2
+  namespace: default
+spec:
+  clusterName: homelab
+  replicas: 0
+```
+
+Apply the desired state to the management cluster and watch CAPI remove the Machines and VMs:
+
+```bash
+kubectl --context kind-capi-bootstrap apply -f cluster.yaml
+
+kubectl --context kind-capi-bootstrap \
+  get machinedeployments,machines,proxmoxmachines -n default -w
+```
+
+Verify that the workers disappeared from the workload cluster:
+
+```bash
+kubectl --kubeconfig=homelab.kubeconfig get nodes
+```
+
+To use the Proxmox node again later, restore the MachineDeployment replica count and reapply `cluster.yaml`. Deleting only a `Machine` is not a permanent scale-down: its owning MachineDeployment creates a replacement to satisfy the existing replica count.
+
+> **Control-plane warning:** do not use this worker procedure to remove a Proxmox node that hosts a control-plane VM. Provision a replacement control-plane member on another Proxmox node first and preserve etcd quorum. A single-control-plane cluster cannot lose its only control-plane VM and remain available.
+
 <details>
 <summary><strong>Issue 5 — unable to create new VM: 500 can't clone VM to node (VM uses local storage)</strong></summary>
 
