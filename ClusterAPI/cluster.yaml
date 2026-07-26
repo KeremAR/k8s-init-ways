@@ -1,0 +1,344 @@
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: homelab
+  name: homelab
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 10.244.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: homelab-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: ProxmoxCluster
+    name: homelab
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxCluster
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: homelab
+  name: homelab
+  namespace: default
+spec:
+  allowedNodes:
+  - pve1
+  - pve2
+  controlPlaneEndpoint:
+    host: 192.168.0.150
+    port: 6443
+  dnsServers:
+  - 8.8.8.8
+  - 8.8.4.4
+  ipv4Config:
+    addresses:
+    - 192.168.0.151-192.168.0.160
+    gateway: 192.168.0.1
+    prefix: 24
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: homelab-control-plane
+  namespace: default
+spec:
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+        - name: kubelet-certificate-authority
+          value: /etc/kubernetes/pki/ca.crt
+    files:
+    - content: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          creationTimestamp: null
+          name: kube-vip
+          namespace: kube-system
+        spec:
+          containers:
+          - args:
+            - manager
+            env:
+            - name: cp_enable
+              value: "true"
+            - name: vip_interface
+              value: ""
+            - name: address
+              value: 192.168.0.150
+            - name: port
+              value: "6443"
+            - name: vip_arp
+              value: "true"
+            - name: vip_leaderelection
+              value: "true"
+            - name: vip_leaseduration
+              value: "15"
+            - name: vip_renewdeadline
+              value: "10"
+            - name: vip_retryperiod
+              value: "2"
+            image: ghcr.io/kube-vip/kube-vip:v0.7.1
+            imagePullPolicy: IfNotPresent
+            name: kube-vip
+            resources: {}
+            securityContext:
+              capabilities:
+                add:
+                - NET_ADMIN
+                - NET_RAW
+            volumeMounts:
+            - mountPath: /etc/kubernetes/admin.conf
+              name: kubeconfig
+          hostAliases:
+          - hostnames:
+            - localhost
+            - kubernetes
+            ip: 127.0.0.1
+          hostNetwork: true
+          volumes:
+          - hostPath:
+              path: /etc/kubernetes/admin.conf
+              type: FileOrCreate
+            name: kubeconfig
+        status: {}
+      owner: root:root
+      path: /etc/kubernetes/manifests/kube-vip.yaml
+    - content: |
+        #!/bin/bash
+        set -e
+        KUBEADM_MINOR="$(kubeadm version -o short | cut -d '.' -f 2)"
+        if [[ "$KUBEADM_MINOR" -lt "29" ]]; then
+          exit 0
+        fi
+        IS_KUBEADM_INIT="false"
+        if [[ -f /run/kubeadm/kubeadm.yaml ]]; then
+          IS_KUBEADM_INIT="true"
+        fi
+        if [[ -f /etc/kubeadm.sh ]] && grep -q -e "kubeadm init" /etc/kubeadm.sh; then
+          IS_KUBEADM_INIT="true"
+        fi
+        if [[ "$IS_KUBEADM_INIT" == "true" ]]; then
+          sed -i 's#path: /etc/kubernetes/admin.conf#path: /etc/kubernetes/super-admin.conf#' \
+            /etc/kubernetes/manifests/kube-vip.yaml
+        fi
+      owner: root:root
+      path: /etc/kube-vip-prepare.sh
+      permissions: "0700"
+    - content: |
+        {
+          "apiVersion": "kubelet.config.k8s.io/v1beta1",
+          "kind": "KubeletConfiguration",
+          "serverTLSBootstrap": true
+        }
+      owner: root:root
+      path: /etc/kubernetes/patches/kubeletconfiguration0+strategic.json
+      permissions: "0644"
+    initConfiguration:
+      patches:
+        directory: /etc/kubernetes/patches
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: provider-id
+          value: proxmox://'{{ ds.meta_data.instance_id }}'
+    joinConfiguration:
+      patches:
+        directory: /etc/kubernetes/patches
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: provider-id
+          value: proxmox://'{{ ds.meta_data.instance_id }}'
+    preKubeadmCommands:
+    - /etc/kube-vip-prepare.sh
+    users:
+    - name: root
+      sshAuthorizedKeys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINEgtQaFXKPB95wAfXzM4DNaLGoZAFgN7dHxDeBB/MrT
+        capi-cluster
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+        name: homelab-control-plane
+  replicas: 1
+  version: v1.36.1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: homelab-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      disks:
+        bootVolume:
+          disk: scsi0
+          sizeGb: 40
+      format: qcow2
+      full: true
+      memoryMiB: 4096
+      network:
+        networkDevices:
+        - bridge: vmbr0
+          model: virtio
+          name: net0
+      numCores: 2
+      numSockets: 1
+      sourceNode: pve1
+      templateID: 100
+---
+# ==========================================
+# PVE1 İÇİN SEÇİLEN WORKER GRUBU (1 REPLICA)
+# ==========================================
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: homelab
+  name: homelab-workers-pve1
+  namespace: default
+spec:
+  clusterName: homelab
+  replicas: 1
+  selector:
+    matchLabels: null
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: homelab
+        node-role.kubernetes.io/node: ""
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: homelab-worker
+      clusterName: homelab
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+        name: homelab-worker-pve1
+      version: v1.36.1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: homelab-worker-pve1
+  namespace: default
+spec:
+  template:
+    spec:
+      disks:
+        bootVolume:
+          disk: scsi0
+          sizeGb: 40
+      format: qcow2
+      full: true
+      memoryMiB: 10240  # 10 GB RAM
+      network:
+        networkDevices:
+        - bridge: vmbr0
+          model: virtio
+          name: net0
+      numCores: 2
+      numSockets: 1
+      sourceNode: pve1  # Sadece pve1 üzerinde ayağa kalkacak
+      templateID: 100
+---
+# ==========================================
+# PVE2 İÇİN SEÇİLEN WORKER GRUBU (2 REPLICA)
+# ==========================================
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: homelab
+  name: homelab-workers-pve2
+  namespace: default
+spec:
+  clusterName: homelab
+  replicas: 2
+  selector:
+    matchLabels: null
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: homelab
+        node-role.kubernetes.io/node: ""
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: homelab-worker
+      clusterName: homelab
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+        name: homelab-worker-pve2
+      version: v1.36.1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: homelab-worker-pve2
+  namespace: default
+spec:
+  template:
+    spec:
+      disks:
+        bootVolume:
+          disk: scsi0
+          sizeGb: 40
+      format: qcow2
+      full: true
+      memoryMiB: 7168  # 7 GB RAM
+      network:
+        networkDevices:
+        - bridge: vmbr0
+          model: virtio
+          name: net0
+      numCores: 2
+      numSockets: 1
+      sourceNode: pve2  # Sadece pve2 üzerinde ayağa kalkacak
+      templateID: 101
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: homelab-worker
+  namespace: default
+spec:
+  template:
+    spec:
+      files:
+      - content: |
+          {
+            "apiVersion": "kubelet.config.k8s.io/v1beta1",
+            "kind": "KubeletConfiguration",
+            "serverTLSBootstrap": true
+          }
+        owner: root:root
+        path: /etc/kubernetes/patches/kubeletconfiguration0+strategic.json
+        permissions: "0644"
+      joinConfiguration:
+        patches:
+          directory: /etc/kubernetes/patches
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: provider-id
+            value: proxmox://'{{ ds.meta_data.instance_id }}'
+      users:
+      - name: root
+        sshAuthorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINEgtQaFXKPB95wAfXzM4DNaLGoZAFgN7dHxDeBB/MrT
+          capi-cluster
