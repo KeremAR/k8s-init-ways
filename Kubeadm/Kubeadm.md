@@ -1170,6 +1170,14 @@ kubectl get configmap calico-config -n kube-system -o yaml
 
 Revert both VMs to the `pre-kubeadm` snapshots from Section 4. This is cleaner than relying only on `kubeadm reset -f`, because reset may not remove every network interface, route, or iptables rule created by a CNI.
 
+In the Proxmox web interface:
+
+1. Stop the VM.
+2. Open `VM → Snapshots`, select its `pre-kubeadm` snapshot, and click **Rollback**.
+3. Repeat for the other VM, then start both VMs again.
+
+Rollback discards every VM change made after the selected snapshot.
+
 Inspect the phase commands provided by the installed kubeadm version:
 
 ```bash
@@ -1177,6 +1185,23 @@ kubeadm init phase --help
 kubeadm init phase certs --help
 kubeadm init phase kubeconfig --help
 kubeadm init phase control-plane --help
+```
+
+`kubeadm init phase --help` only lists and explains the available phases.
+Running a concrete phase is **not a preview**: it performs that part of the
+initialization workflow and changes files or cluster state. For example,
+`kubeadm init phase certs all` really writes the PKI files, while
+`control-plane all` really writes the static Pod manifests.
+
+Some phase commands provide `--dry-run`, which prints what would be done
+without applying the changes. Check the installed version's help before using
+it:
+
+```bash
+kubeadm init phase certs all --help
+kubeadm init phase certs all \
+  --config /home/ubuntu/kubeadm-config.yaml \
+  --dry-run
 ```
 
 Study the main sequence:
